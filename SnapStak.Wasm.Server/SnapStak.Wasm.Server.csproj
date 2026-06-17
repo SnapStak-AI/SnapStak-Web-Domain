@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SnapStak.Wasm.Server</RootNamespace>
+    <!--
+      CS0006 / RAZORSDK1007 fix:
+      Forces the Client project to fully complete its build (including the
+      reference assembly in obj/Debug/net9.0/ref/) before the Server project
+      attempts to compile. Without this, MSBuild can start the Server CSC task
+      before the Client reference DLL exists.
+    -->
+    <BuildProjectReferences>true</BuildProjectReferences>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="9.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="SkiaSharp" Version="3.119.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <!--
+      ReferenceOutputAssembly="true":
+      The Server consumes the Client assembly as a C# library so it can use
+      the shared plugin contract types (IConteXTranslatorPlugin,
+      TranslatorPluginHost, SvgNode, etc.) that live in the Client project
+      under SnapStak.Wasm.Client.Engine.Plugins and SnapStak.Wasm.Client.Models.
+      Blazor WASM code that only the browser runs still ships via wwwroot —
+      this flag only changes whether the compiled DLL is linked at build time.
+    -->
+    <ProjectReference Include="..\SnapStak.Wasm.Client\SnapStak.Wasm.Client.csproj" ReferenceOutputAssembly="true" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,105 @@
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.WebAssembly.Hosting
+@using SnapStak.Wasm.Client.Services
+@inject LicenceService Licence
+@inject NavigationManager Nav
+@inject IWebAssemblyHostEnvironment HostEnv
+
+@if (_checked)
+{
+    <Router AppAssembly="@typeof(App).Assembly">
+        <Found Context="routeData">
+            <RouteView RouteData="@routeData"
+                       DefaultLayout="@typeof(SnapStak.Wasm.Client.Layouts.MainLayout)" />
+        </Found>
+        <NotFound><p>Page not found.</p></NotFound>
+    </Router>
+}
+
+@code {
+    private static readonly System.Net.Http.HttpClient _http = new();
+    private bool   _checked     = false;
+    private bool   _isReady     = false;
+    private string _lockMessage = string.Empty;
+    private string _currentPath = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _currentPath = new Uri(Nav.Uri).AbsolutePath;
+
+        try
+        {
+            if (HostEnv.IsDevelopment())
+            {
+                // Dev mode — skip server validation but still check local state
+                _isReady = await Licence.IsReadyAsync();
+            }
+            else
+            {
+                // Production — validate subscription against server
+                await Licence.ValidateSubscriptionAsync();
+                _isReady = await Licence.IsReadyAsync();
+            }
+
+            if (!_isReady)
+            {
+                var status = await Licence.GetSubStatusAsync();
+                _lockMessage = status switch
+                {
+                    "past_due"           => "Your last payment failed. Please update your payment method to continue.",
+                    "unpaid"             => "Your subscription payment failed. Please resubscribe to continue.",
+                    "canceled"           => "Your subscription has been cancelled. Resubscribe to continue.",
+                    "incomplete"         => "Your subscription did not complete. Please subscribe again.",
+                    "incomplete_expired" => "Your subscription payment window expired. Please subscribe again.",
+                    "paused"             => "Your subscription is paused. Resume it to continue.",
+                    "no_subscription"    => string.Empty,
+                    _                   => string.Empty,
+                };
+
+                if (_currentPath != "/getstarted")
+                {
+                    var dest = string.IsNullOrEmpty(_lockMessage)
+                        ? "/getstarted"
+                        : $"/getstarted?msg={Uri.EscapeDataString(_lockMessage)}";
+                    Nav.NavigateTo(dest);
+                }
+            }
+            else if (_currentPath == "/" || _currentPath == "/getstarted")
+            {
+                // Ready — check OpenRouter balance to decide where to land
+                var apiKey = await Licence.GetApiKeyAsync();
+                var hasCredits = await CheckOpenRouterCreditsAsync(apiKey ?? string.Empty);
+                Nav.NavigateTo(hasCredits ? "/" : "/settings");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[App] Init error: {ex.Message}");
+            _isReady = false;
+            if (_currentPath != "/getstarted")
+                Nav.NavigateTo("/getstarted");
+        }
+        finally
+        {
+            _checked = true;
+        }
+    }
+
+    private async Task<bool> CheckOpenRouterCreditsAsync(string apiKey)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey)) return false;
+        try
+        {
+            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, "https://openrouter.ai/api/v1/credits");
+            req.Headers.Add("Authorization", $"Bearer {apiKey}");
+            using var resp = await _http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode) return false;
+            var json     = await resp.Content.ReadAsStringAsync();
+            dynamic? obj = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+            double purchased = (double)(obj?.data?.total_credits ?? 0);
+            double used      = (double)(obj?.data?.total_usage   ?? 0);
+            return (purchased - used) > 0;
+        }
+        catch { return false; }
+    }
+}

@@ -1,0 +1,816 @@
+@page "/settings"
+@using SnapStak.Wasm.Client.Services
+@using SnapStak.Wasm.Client.Storage
+@using Microsoft.JSInterop
+@inject LicenceService Licence
+@inject MobilePairingService MobilePairing
+@inject ModelService Models
+@inject PluginSettingsService PluginSettings
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@implements IDisposable
+
+<div style="display:flex;flex-direction:column;gap:14px;">
+    <div>
+        <div style="font-size:21px;font-weight:500;color:#fff;">Settings</div>
+        <div style="font-size:13px;color:#555;margin-top:3px;">Manage your API key, subscription, and design tool plugins.</div>
+    </div>
+
+    <!-- OpenRouter API key -->
+    <div class="ss-card">
+        <div class="ss-title">OpenRouter API key</div>
+        <div class="ss-info">Stored only in your browser. Never sent to SnapStak — AI requests go directly from your browser to OpenRouter.</div>
+        <input class="ss-inp"
+               id="apiKeyInput"
+               type="password"
+               placeholder="sk-or-v1-…"
+               value="@_apiKey"
+               @oninput="OnApiKeyInput" />
+        <div class="ss-row">
+            <button class="ss-bp" @onclick="SaveKey">Update key</button>
+            <button class="ss-bg" @onclick="ClearKey">Clear</button>
+            <a class="ss-bg" href="https://openrouter.ai/keys" target="_blank">Get a key ↗</a>
+        </div>
+        @if (_keySaved)
+        {
+            <div class="ss-ok">✓ API key saved.</div>
+        }
+        @if (_keyError)
+        {
+            <div class="ss-err">API key cannot be empty.</div>
+        }
+        @if (_creditsRemaining.HasValue)
+        {
+            var remaining = _creditsRemaining.Value;
+            var cls = remaining <= 0 ? "ss-credits--empty" : remaining < 5 ? "ss-credits--low" : "ss-credits--ok";
+            <div class="ss-credits @cls">
+                @if (remaining <= 0)
+                {
+                    <span>⛔ No credits remaining — <a href="https://openrouter.ai/credits" target="_blank" style="color:#f88;">top up now ↗</a></span>
+                }
+                else if (remaining < 5)
+                {
+                    <span>⚠ Low balance: $@remaining.ToString("F2") — <a href="https://openrouter.ai/credits" target="_blank" style="color:#ca8;">top up ↗</a></span>
+                }
+                else
+                {
+                    <span>✓ Balance: $@remaining.ToString("F2") remaining</span>
+                }
+            </div>
+        }
+        @if (_creditsError != null)
+        {
+            <div class="ss-credits ss-credits--error">⚠ @_creditsError</div>
+        }
+    </div>
+
+
+    <!-- Mobile Pairing -->
+    <div class="ss-card">
+        <div class="ss-title">Mobile pairing</div>
+        <div class="ss-info">Make sure your phone is on the same WiFi network. Press Generate PIN, then enter the PIN on SnapStak Mobile Settings within 60 seconds.</div>
+
+        @if (_pairingState == PairingState.Idle)
+        {
+            <!-- State A - ready to pair -->
+            <div class="ss-row">
+                <button class="ss-bp" @onclick="GeneratePin" disabled="@(!_licenceValid)">Generate PIN</button>
+            </div>
+            @if (!_licenceValid)
+            {
+                <div class="ss-err">An active SnapStak subscription is required to pair a mobile device.</div>
+            }
+        }
+        else if (_pairingState == PairingState.PinActive)
+        {
+            <!-- State B - PIN active -->
+            <div class="pair-pin-display">@_currentPin</div>
+            <div class="pair-countdown">
+                <span class="pair-countdown-label">Expires in @_pinSecondsRemaining s</span>
+                <div class="pair-progress-track">
+                    <div class="pair-progress-bar" style="width:@(((_pinSecondsRemaining / 60.0) * 100).ToString("F0"))%;"></div>
+                </div>
+            </div>
+            <div class="pair-waiting">Waiting for Mobile to connect…</div>
+            <div class="ss-row" style="margin-top:10px;">
+                <button class="ss-bg" @onclick="CancelPin">Cancel</button>
+            </div>
+        }
+        else if (_pairingState == PairingState.InProgress)
+        {
+            <!-- State C - in progress -->
+            <div class="pair-spinner-row">
+                <div class="pair-spinner"></div>
+                <span class="pair-status-text">Mobile connected — verifying subscription…</span>
+            </div>
+        }
+        else if (_pairingState == PairingState.Succeeded)
+        {
+            <!-- State D - succeeded -->
+            <div class="ss-ok" style="margin-bottom:8px;">✓ Paired with device @((_pairedDeviceId ?? "")[..Math.Min(8, (_pairedDeviceId ?? "").Length)])... at @_pairedAt?.ToString("HH:mm d MMM")</div>
+            <div class="ss-row">
+                <button class="ss-bg" @onclick="GeneratePin">Generate new PIN</button>
+            </div>
+        }
+        else if (_pairingState == PairingState.Failed)
+        {
+            <!-- State E - failed -->
+            <div class="ss-err">@_pairingError</div>
+            <div class="ss-row" style="margin-top:8px;">
+                <button class="ss-bg" @onclick="ResetPairing">Try again</button>
+            </div>
+        }
+
+        @if (_pairedDevices.Count > 0)
+        {
+            <div class="ss-div"></div>
+            <div class="ss-title" style="margin-bottom:8px;">Paired devices</div>
+            <table class="ss-table">
+                <thead>
+                    <tr>
+                        <td style="color:#444;font-size:11px;">Device ID</td>
+                        <td style="color:#444;font-size:11px;">Paired</td>
+                        <td style="color:#444;font-size:11px;text-align:right;">Actions</td>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var device in _pairedDevices)
+                    {
+                        <tr>
+                            <td><span style="font-family:monospace;color:#aaa;">@device.DeviceId[..Math.Min(8, device.DeviceId.Length)]…</span></td>
+                            <td>@device.PairedAt.ToString("d MMM yyyy")</td>
+                            <td style="text-align:right;">
+                                <button class="ss-bdanger" style="padding:4px 10px;font-size:11px;"
+                                        @onclick="() => RemoveDevice(device.DeviceId)">Remove</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(_removeDeviceWarning))
+        {
+            <div style="margin-top:10px;padding:10px 12px;background:#1a0a0a;border:0.5px solid #440000;border-radius:8px;font-size:12px;color:#FF8888;line-height:1.5;">
+                ⚠ @_removeDeviceWarning
+            </div>
+        }
+    </div>
+    <div class="ss-card">
+        <div class="ss-title">Subscription</div>
+        @if (_licenceValid)
+        {
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0a140a;border:0.5px solid #1a3a1a;border-radius:8px;">
+                <div style="width:8px;height:8px;border-radius:50%;background:#4f8;flex-shrink:0;"></div>
+                <span style="font-size:13px;color:#4f8;font-weight:500;">SnapStak Desktop — Active</span>
+                <span style="font-size:11px;color:#3a6a3a;margin-left:auto;">ZAR 199 / month</span>
+            </div>
+            <div class="ss-div"></div>
+            <table class="ss-table">
+                <tr><td>Plan</td><td>SnapStak Desktop</td></tr>
+                <tr><td>Amount</td><td>ZAR 199 / month</td></tr>
+                <tr><td>Status</td><td style="color:#4f8;">Active</td></tr>
+            </table>
+            <div class="ss-div"></div>
+            <div class="ss-row">
+                @if (!string.IsNullOrEmpty(_subId))
+                {
+                    <a class="ss-bg" href="https://dashboard.paystack.com/#/subscriptions/@_subId" target="_blank">Manage via Paystack ↗</a>
+                }
+                else
+                {
+                    <span class="ss-bg" style="opacity:0.4;cursor:not-allowed;">Manage via Paystack ↗</span>
+                }
+            </div>
+        }
+        else
+        {
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#1a0a0a;border:0.5px solid #440000;border-radius:8px;">
+                <div style="width:8px;height:8px;border-radius:50%;background:#f88;flex-shrink:0;"></div>
+                <span style="font-size:13px;color:#f88;font-weight:500;">No active subscription</span>
+            </div>
+        }
+    </div>
+
+    <!-- Danger zone -->
+    <div style="border:0.5px solid #2a1a0a;border-radius:11px;padding:16px;background:#0d0a06;">
+        <div style="font-size:10px;font-weight:500;color:#c07020;text-transform:uppercase;letter-spacing:.7px;margin-bottom:11px;">Danger zone</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div style="font-size:12px;color:#998;line-height:1.5;flex:1;min-width:180px;"><strong style="color:#e07820;font-weight:500;">Cancel subscription</strong><br>Access removed at end of billing period. Session data unaffected.</div>
+            <button class="ss-bdanger" @onclick="Cancel" disabled="@_cancelling">
+                @(_cancelling ? "Cancelling…" : "Cancel subscription")
+            </button>
+            @if (_cancelError != null)
+            {
+                <div class="ss-err" style="margin-top:8px;">@_cancelError</div>
+            }
+        </div>
+        <div style="border:none;border-top:0.5px solid #2a1a0a;margin:12px 0;"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div style="font-size:12px;color:#998;line-height:1.5;flex:1;min-width:180px;"><strong style="color:#e07820;font-weight:500;">Clear all session data</strong><br>Permanently deletes all components from IndexedDB. Cannot be undone.</div>
+            <button class="ss-bdanger">Clear all data</button>
+        </div>
+    </div>
+    <!-- ── OUTPUT PATHS ──────────────────────────────────────────────────────── -->
+    <div class="ss-card">
+        <div class="ss-title">Output paths</div>
+        <div class="ss-info">
+            Set where SnapStak and each plugin write their files. Changes take effect immediately — the CON10X server is updated automatically.
+        </div>
+
+        <!-- SnapStak output root -->
+        <div class="ss-field-group">
+            <div class="ss-field-label">
+                <span class="ss-badge ss-badge--snapstak">SnapStak</span>
+                <span class="ss-field-name">Output root</span>
+            </div>
+            <div class="ss-field-desc">Where .svg, .json, and .html files are written for every captured component.</div>
+            <div class="ss-path-row">
+                <input class="ss-inp ss-inp--path"
+                       placeholder="@PluginSettingsService.DefaultOutputRoot"
+                       value="@_settings.OutputRoot"
+                       @oninput="e => _settings.OutputRoot = e.Value?.ToString() ?? string.Empty" />
+                <button class="ss-bg ss-bg--sm" @onclick="SavePluginSettings">Save</button>
+            </div>
+        </div>
+
+        <div class="ss-div"></div>
+
+        <!-- ── PLUGIN TOGGLES ──────────────────────────────────────────────── -->
+        <div class="ss-plugins-header">Design tool plugins</div>
+
+        <!-- Penpot -->
+        <div class="ss-plugin-row @(!_settings.PenpotEnabled ? "ss-plugin-row--disabled" : "")">
+            <div class="ss-plugin-top">
+                <div class="ss-plugin-identity">
+                    <div class="ss-plugin-dot @(_settings.PenpotEnabled ? "ss-dot--on" : "ss-dot--off")"></div>
+                    <span class="ss-plugin-name">Penpot</span>
+                    <span class="ss-plugin-ext">.penpot</span>
+                </div>
+                <label class="ss-toggle">
+                    <input type="checkbox"
+                           checked="@_settings.PenpotEnabled"
+                           @onchange="e => { _settings.PenpotEnabled = (bool)(e.Value ?? false); _ = SavePluginSettings(); }" />
+                    <span class="ss-toggle-track"></span>
+                </label>
+            </div>
+            @if (_settings.PenpotEnabled)
+            {
+                <div class="ss-plugin-path-row">
+                    <span class="ss-path-label">Output folder</span>
+                    <input class="ss-inp ss-inp--path"
+                           placeholder="@PluginSettingsService.DefaultPenpotPath"
+                           value="@_settings.PenpotOutputPath"
+                           @oninput="e => _settings.PenpotOutputPath = e.Value?.ToString() ?? string.Empty" />
+                    <button class="ss-bg ss-bg--sm" @onclick="SavePluginSettings">Save</button>
+                </div>
+            }
+        </div>
+
+        <!-- Canva -->
+        <div class="ss-plugin-row @(!_settings.CanvaEnabled ? "ss-plugin-row--disabled" : "")">
+            <div class="ss-plugin-top">
+                <div class="ss-plugin-identity">
+                    <div class="ss-plugin-dot @(_settings.CanvaEnabled ? "ss-dot--on" : "ss-dot--off")"></div>
+                    <span class="ss-plugin-name">Canva</span>
+                    <span class="ss-plugin-ext">.canva.pdf</span>
+                </div>
+                <label class="ss-toggle">
+                    <input type="checkbox"
+                           checked="@_settings.CanvaEnabled"
+                           @onchange="e => { _settings.CanvaEnabled = (bool)(e.Value ?? false); _ = SavePluginSettings(); }" />
+                    <span class="ss-toggle-track"></span>
+                </label>
+            </div>
+            @if (_settings.CanvaEnabled)
+            {
+                <div class="ss-plugin-path-row">
+                    <span class="ss-path-label">Output folder</span>
+                    <input class="ss-inp ss-inp--path"
+                           placeholder="@PluginSettingsService.DefaultCanvaPath"
+                           value="@_settings.CanvaOutputPath"
+                           @oninput="e => _settings.CanvaOutputPath = e.Value?.ToString() ?? string.Empty" />
+                    <button class="ss-bg ss-bg--sm" @onclick="SavePluginSettings">Save</button>
+                </div>
+            }
+        </div>
+
+        <!-- Figma -->
+        <div class="ss-plugin-row @(!_settings.FigmaEnabled ? "ss-plugin-row--disabled" : "")">
+            <div class="ss-plugin-top">
+                <div class="ss-plugin-identity">
+                    <div class="ss-plugin-dot @(_settings.FigmaEnabled ? "ss-dot--on" : "ss-dot--off")"></div>
+                    <span class="ss-plugin-name">Figma</span>
+                    <span class="ss-plugin-ext">.figma.svg</span>
+                </div>
+                <label class="ss-toggle">
+                    <input type="checkbox"
+                           checked="@_settings.FigmaEnabled"
+                           @onchange="e => { _settings.FigmaEnabled = (bool)(e.Value ?? false); _ = SavePluginSettings(); }" />
+                    <span class="ss-toggle-track"></span>
+                </label>
+            </div>
+            @if (_settings.FigmaEnabled)
+            {
+                <div class="ss-plugin-path-row">
+                    <span class="ss-path-label">Output folder</span>
+                    <input class="ss-inp ss-inp--path"
+                           placeholder="@PluginSettingsService.DefaultFigmaPath"
+                           value="@_settings.FigmaOutputPath"
+                           @oninput="e => _settings.FigmaOutputPath = e.Value?.ToString() ?? string.Empty" />
+                    <button class="ss-bg ss-bg--sm" @onclick="SavePluginSettings">Save</button>
+                </div>
+            }
+        </div>
+
+        @if (_pluginSettingsSaved)
+        {
+            <div class="ss-ok">✓ Plugin settings saved.</div>
+        }
+    </div>
+
+    <!-- Framer Server API -->
+    <div class="ss-card">
+        <div class="ss-title">Framer</div>
+        <div class="ss-info">
+            Connect to a Framer project. After generating React code in the Transform tab,
+            click "Send to Framer" to push the component directly into your Framer project
+            as a live code file — ready to drag onto the canvas and publish.
+        </div>
+
+        <div class="ss-field-group" style="margin-top:4px;">
+            <div class="ss-field-label">
+                <span class="ss-badge ss-badge--framer">Framer</span>
+                <span class="ss-field-name">Project URL</span>
+            </div>
+            <div class="ss-field-desc">From your Framer project — e.g. https://framer.com/projects/my-site--abc123</div>
+            <input class="ss-inp"
+                   placeholder="https://framer.com/projects/your-project-id"
+                   value="@_settings.FramerProjectUrl"
+                   @oninput="e => _settings.FramerProjectUrl = e.Value?.ToString() ?? string.Empty" />
+        </div>
+
+        <div class="ss-field-group" style="margin-top:10px;">
+            <div class="ss-field-label">
+                <span class="ss-field-name">API Key</span>
+            </div>
+            <div class="ss-field-desc">Project Settings → General → Developer → API Keys → Generate Key</div>
+            <input class="ss-inp" type="password"
+                   placeholder="framer_api_…"
+                   value="@_settings.FramerApiKey"
+                   @oninput="e => _settings.FramerApiKey = e.Value?.ToString() ?? string.Empty" />
+        </div>
+
+        <div class="ss-row" style="margin-top:10px;">
+            <button class="ss-bp" @onclick="SavePluginSettings">Save Framer settings</button>
+            @if (!string.IsNullOrEmpty(_settings.FramerProjectUrl) && !string.IsNullOrEmpty(_settings.FramerApiKey))
+            {
+                <span style="font-size:11px;color:#4f8;align-self:center;">✓ Configured</span>
+            }
+        </div>
+
+        <div class="ss-div"></div>
+        <div class="ss-field-desc">
+            <strong style="color:#aaa;">How to get your API key:</strong>
+            Open your Framer project → Settings (bottom-left cog) → General →
+            scroll to Developer → API Keys → Generate Key.
+            The key is shown once — save it here immediately.
+        </div>
+    </div>
+
+    <!-- About -->
+    <div class="ss-card">
+        <div class="ss-title">About</div>
+        <table class="ss-table">
+            <tr><td>Product</td><td>SnapStak Desktop · CON10X Engine v1.0</td></tr>
+            <tr><td>Processing</td><td>On your machine — nothing leaves your browser</td></tr>
+            <tr><td>Native frameworks</td><td>SnapStak Mobile · App Store</td></tr>
+            <tr><td>Documentation</td><td><a style="color:#38a3f8;text-decoration:none;" href="https://docs.snapstak.ai" target="_blank">docs.snapstak.ai ↗</a></td></tr>
+            <tr><td>Support</td><td><a style="color:#38a3f8;text-decoration:none;" href="mailto:support@snapstak.ai">support@snapstak.ai ↗</a></td></tr>
+            <tr><td>Privacy</td><td><a style="color:#38a3f8;text-decoration:none;" href="https://snapstak.ai/privacy" target="_blank">snapstak.ai/privacy ↗</a></td></tr>
+        </table>
+    </div>
+</div>
+
+@code {
+    private string  _apiKey           = string.Empty;
+    private string  _subId            = string.Empty;
+    private bool    _keySaved         = false;
+    private bool    _keyError         = false;
+    private double? _creditsRemaining = null;
+    private string? _creditsError     = null;
+
+    private static readonly System.Net.Http.HttpClient _http = new();
+    private bool    _cancelling  = false;
+    private string? _cancelError = null;
+    private bool    _licenceValid = false;
+
+    // Plugin settings — null! here because injected service not available at field init time.
+    // Assigned in OnInitializedAsync before first render.
+    private PluginSettings _settings           = null!;
+    private bool           _pluginSettingsSaved = false;
+
+    // ── Mobile pairing state ──────────────────────────────────────────────────
+    private PairingState        _pairingState      = PairingState.Idle;
+    private string?             _currentPin        = null;
+    private int                 _pinSecondsRemaining = 60;
+    private string?             _pairingError      = null;
+    private string?             _pairedDeviceId    = null;
+    private DateTime?           _pairedAt          = null;
+    private List<PairedDevice>  _pairedDevices     = new();
+    private string?             _removeDeviceWarning = null;
+    private System.Threading.Timer? _pairingPollTimer;
+    private System.Threading.Timer? _devicesRefreshTimer;
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        _apiKey       = await Licence.GetApiKeyAsync() ?? string.Empty;
+        _subId        = await Licence.GetSubIdAsync()  ?? string.Empty;
+        _licenceValid = await Licence.IsLicenceValidAsync();
+        _settings     = await PluginSettings.LoadAsync();
+        _pairedDevices = await MobilePairing.GetPairedDevicesAsync();
+        _ = Models.FetchModelsAsync();
+
+        if (!string.IsNullOrWhiteSpace(_apiKey))
+            await FetchCreditsAsync(_apiKey);
+
+        // Sync settings to server immediately on page load.
+        try { await PluginSettings.SaveAsync(_settings); } catch { }
+
+        // Poll paired devices every 3 seconds so the UI updates automatically
+        // when Mobile removes its pairing without the user clicking anything.
+        _devicesRefreshTimer = new System.Threading.Timer(
+            _ => InvokeAsync(RefreshPairedDevicesAsync),
+            null,
+            TimeSpan.FromSeconds(3),
+            TimeSpan.FromSeconds(3));
+    }
+
+    private async Task RefreshPairedDevicesAsync()
+    {
+        var devices = await MobilePairing.GetPairedDevicesAsync();
+        if (devices.Count != _pairedDevices.Count ||
+            devices.Select(d => d.DeviceId).Except(_pairedDevices.Select(d => d.DeviceId)).Any())
+        {
+            _pairedDevices  = devices;
+            // If all devices removed, reset the pairing success banner
+            if (_pairedDevices.Count == 0)
+            {
+                _pairingState   = PairingState.Idle;
+                _pairedDeviceId = null;
+                _pairedAt       = null;
+            }
+            StateHasChanged();
+        }
+    }
+
+    // ── Mobile pairing ────────────────────────────────────────────────────────
+
+    private async Task GeneratePin()
+    {
+        _pairingError = null;
+        try
+        {
+            _currentPin = await MobilePairing.GeneratePinAsync();
+            _pairingState = PairingState.PinActive;
+            _pinSecondsRemaining = 60;
+            StateHasChanged();
+
+            _pairingPollTimer?.Dispose();
+            _pairingPollTimer = new System.Threading.Timer(
+                _ => InvokeAsync(PollPairingAsync),
+                null,
+                TimeSpan.FromSeconds(1),
+                TimeSpan.FromSeconds(1));
+        }
+        catch (Exception ex)
+        {
+            _pairingState = PairingState.Failed;
+            _pairingError = ex.Message;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PollPairingAsync()
+    {
+        var status = await MobilePairing.GetStatusAsync();
+        _pairingState        = status.State;
+        _pinSecondsRemaining = status.SecondsRemaining;
+        _pairedDevices       = status.PairedDevices;
+
+        if (status.State == PairingState.Succeeded)
+        {
+            _pairedDeviceId = status.PairedDeviceId;
+            _pairedAt       = status.PairedAt;
+            _pairingPollTimer?.Dispose();
+        }
+        else if (status.State == PairingState.Failed)
+        {
+            _pairingError = status.ErrorMessage ?? "Pairing failed.";
+            _pairingPollTimer?.Dispose();
+        }
+        else if (status.State == PairingState.Idle)
+        {
+            // PIN expired without a connection
+            _pairingError = "PIN expired. Please generate a new one.";
+            _pairingState = PairingState.Failed;
+            _pairingPollTimer?.Dispose();
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task CancelPin()
+    {
+        _pairingPollTimer?.Dispose();
+        await MobilePairing.CancelPinAsync();
+        _pairingState = PairingState.Idle;
+        _currentPin   = null;
+        StateHasChanged();
+    }
+
+    private void ResetPairing()
+    {
+        _pairingState = PairingState.Idle;
+        _pairingError = null;
+        _currentPin   = null;
+        StateHasChanged();
+    }
+
+    private async Task RemoveDevice(string deviceId)
+    {
+        _removeDeviceWarning = null;
+
+        // Stop the poll timer before removing — prevents it racing and restoring stale state
+        _pairingPollTimer?.Dispose();
+        _pairingPollTimer = null;
+
+        try
+        {
+            await MobilePairing.RemoveDeviceAsync(deviceId);
+
+            // Reset all pairing state so the success banner and device list clear immediately
+            _pairingState   = PairingState.Idle;
+            _pairedDeviceId = null;
+            _pairedAt       = null;
+            _currentPin     = null;
+            _pairingError   = null;
+        }
+        catch (Exception ex)
+        {
+            _removeDeviceWarning = ex.Message;
+        }
+
+        _pairedDevices = await MobilePairing.GetPairedDevicesAsync();
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        _pairingPollTimer?.Dispose();
+        _devicesRefreshTimer?.Dispose();
+    }
+
+    // ── Plugin settings ───────────────────────────────────────────────────────
+
+    private async Task SavePluginSettings()
+    {
+        _pluginSettingsSaved = false;
+        await PluginSettings.SaveAsync(_settings);
+        _pluginSettingsSaved = true;
+        StateHasChanged();
+        _ = HidePluginSavedBannerAsync();
+    }
+
+    private async Task HidePluginSavedBannerAsync()
+    {
+        await Task.Delay(2500);
+        _pluginSettingsSaved = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── API key ───────────────────────────────────────────────────────────────
+
+    private void OnApiKeyInput(ChangeEventArgs e)
+        => _apiKey = e.Value?.ToString() ?? string.Empty;
+
+    private async Task SaveKey()
+    {
+        _keyError = false;
+        _keySaved = false;
+
+        var key = (_apiKey ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            _keyError = true;
+            StateHasChanged();
+            return;
+        }
+
+        _apiKey = key;
+        await Licence.SetApiKeyAsync(_apiKey);
+        _keySaved     = true;
+        _creditsError = null;
+        StateHasChanged();
+
+        await FetchCreditsAsync(_apiKey);
+        StateHasChanged();
+        _ = HideSavedBannerAsync();
+    }
+
+    private async Task HideSavedBannerAsync()
+    {
+        await Task.Delay(2500);
+        _keySaved = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task FetchCreditsAsync(string key)
+    {
+        try
+        {
+            using var req = new System.Net.Http.HttpRequestMessage(
+                System.Net.Http.HttpMethod.Get, "https://openrouter.ai/api/v1/credits");
+            req.Headers.Add("Authorization", $"Bearer {key}");
+            using var resp = await _http.SendAsync(req);
+
+            if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                _creditsRemaining = null;
+                _creditsError     = "Invalid API key.";
+                return;
+            }
+
+            var json     = await resp.Content.ReadAsStringAsync();
+            dynamic? obj = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+            double purchased = (double)(obj?.data?.total_credits ?? 0);
+            double used      = (double)(obj?.data?.total_usage   ?? 0);
+            _creditsRemaining = Math.Max(0, purchased - used);
+            _creditsError     = null;
+        }
+        catch
+        {
+            _creditsRemaining = null;
+            _creditsError     = "Could not reach OpenRouter.";
+        }
+    }
+
+    private async Task ClearKey()
+    {
+        _apiKey           = string.Empty;
+        _creditsRemaining = null;
+        _creditsError     = null;
+        _keySaved         = false;
+        _keyError         = false;
+        await Licence.ClearApiKeyAsync();
+        StateHasChanged();
+    }
+
+    // ── Cancel subscription ───────────────────────────────────────────────────
+
+    private async Task Cancel()
+    {
+        _cancelError = null;
+        _cancelling  = true;
+        StateHasChanged();
+
+        var apiKeyCopy = _apiKey;
+        var subId      = await Licence.GetSubIdAsync();
+        var userUuid   = await Licence.GetUserUuidAsync();
+        await Licence.DeactivateLicenceAsync();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(apiKeyCopy))
+                {
+                    using var keyReq = new System.Net.Http.HttpRequestMessage(
+                        System.Net.Http.HttpMethod.Get, "https://openrouter.ai/api/v1/key");
+                    keyReq.Headers.Add("Authorization", $"Bearer {apiKeyCopy}");
+                    using var keyResp = await _http.SendAsync(keyReq);
+                    if (keyResp.IsSuccessStatusCode)
+                    {
+                        var keyJson  = await keyResp.Content.ReadAsStringAsync();
+                        dynamic? obj = Newtonsoft.Json.JsonConvert.DeserializeObject(keyJson);
+                        string? hash = obj?.data?.hash;
+                        if (!string.IsNullOrEmpty(hash))
+                        {
+                            using var delReq = new System.Net.Http.HttpRequestMessage(
+                                System.Net.Http.HttpMethod.Delete,
+                                $"https://openrouter.ai/api/v1/keys/{hash}");
+                            delReq.Headers.Add("Authorization", $"Bearer {apiKeyCopy}");
+                            await _http.SendAsync(delReq);
+                        }
+                    }
+                }
+                if (!string.IsNullOrEmpty(subId))
+                {
+                    using var cancelReq = new System.Net.Http.HttpRequestMessage(
+                        System.Net.Http.HttpMethod.Post,
+                        "https://subscriptions.snapstak.ai/api/cancel");
+                    cancelReq.Content = new System.Net.Http.StringContent(
+                        Newtonsoft.Json.JsonConvert.SerializeObject(
+                            new { subscriptionCode = subId, userUuid }),
+                        System.Text.Encoding.UTF8, "application/json");
+                    await _http.SendAsync(cancelReq);
+                }
+            }
+            catch { /* best-effort */ }
+        });
+
+        Nav.NavigateTo("/getstarted", forceLoad: true);
+    }
+}
+
+<style>
+/* ── Existing styles (unchanged) ─────────────────────────────────────────── */
+.ss-card    { background:#141414; border:0.5px solid #1e1e1e; border-radius:11px; padding:16px; }
+.ss-title   { font-size:10px; font-weight:500; color:#555; text-transform:uppercase; letter-spacing:.7px; margin-bottom:11px; }
+.ss-info    { padding:9px 12px; border-radius:7px; font-size:12px; line-height:1.5; background:#0a1220; border:0.5px solid #1a2a3a; color:#68b; margin-bottom:9px; }
+.ss-ok      { padding:7px 12px; border-radius:7px; font-size:12px; background:#0a140a; border:0.5px solid #1a3a1a; color:#4f8; margin-top:8px; }
+.ss-err     { padding:7px 12px; border-radius:7px; font-size:12px; background:#1a0a0a; border:0.5px solid #440000; color:#f88; margin-top:8px; }
+.ss-inp     { width:100%; background:#0a0a0a; border:0.5px solid #2a2a2a; border-radius:8px; padding:8px 12px; color:#e8e8e8; font-size:13px; font-family:monospace; outline:none; box-sizing:border-box; }
+.ss-inp:focus { border-color:#38a3f8; }
+.ss-row     { display:flex; gap:8px; margin-top:9px; flex-wrap:wrap; }
+.ss-bp      { background:#38a3f8; color:#000; border:none; border-radius:7px; padding:8px 16px; font-size:13px; font-weight:500; cursor:pointer; }
+.ss-bp:hover { background:#5ab5fa; }
+.ss-bg      { background:transparent; color:#555; border:0.5px solid #2a2a2a; border-radius:7px; padding:8px 13px; font-size:12px; cursor:pointer; text-decoration:none; display:inline-flex; }
+.ss-bg:hover { border-color:#444; color:#aaa; }
+.ss-div     { border:none; border-top:0.5px solid #1e1e1e; margin:11px 0; }
+.ss-table   { width:100%; border-collapse:collapse; }
+.ss-table tr { border-bottom:0.5px solid #1a1a1a; }
+.ss-table tr:last-child { border-bottom:none; }
+.ss-table td { padding:8px 0; font-size:12px; }
+.ss-table td:first-child { color:#666; width:140px; }
+.ss-table td:last-child  { color:#bbb; text-align:right; }
+.ss-bdanger { background:transparent; color:#e07820; border:0.5px solid #3a2010; border-radius:7px; padding:8px 13px; font-size:12px; cursor:pointer; white-space:nowrap; }
+.ss-bdanger:hover { background:#1a0e06; }
+.ss-credits         { margin-top:10px; padding:8px 12px; border-radius:7px; font-size:12px; line-height:1.5; }
+.ss-credits--ok     { background:#0a140a; border:0.5px solid #1a3a1a; color:#4f8; }
+.ss-credits--low    { background:#1a130a; border:0.5px solid #443300; color:#ca8; }
+.ss-credits--empty  { background:#1a0a0a; border:0.5px solid #440000; color:#f88; }
+.ss-credits--error  { background:#1a0a0a; border:0.5px solid #440000; color:#f88; }
+.ss-credits a       { font-weight:500; }
+
+/* ── Plugin settings ─────────────────────────────────────────────────────── */
+.ss-field-group     { margin-top:4px; }
+.ss-field-label     { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.ss-field-name      { font-size:12px; font-weight:500; color:#aaa; }
+.ss-field-desc      { font-size:11px; color:#555; margin-bottom:6px; line-height:1.45; }
+.ss-path-row        { display:flex; gap:6px; align-items:center; }
+.ss-inp--path       { font-size:12px; padding:6px 10px; }
+.ss-bg--sm          { padding:6px 10px; font-size:12px; flex-shrink:0; }
+
+.ss-plugins-header  { font-size:10px; font-weight:500; color:#555; text-transform:uppercase;
+                       letter-spacing:.7px; margin:12px 0 8px; }
+
+.ss-plugin-row      { border:0.5px solid #1e1e1e; border-radius:8px; padding:10px 12px;
+                       margin-bottom:6px; background:#0e0e0e; transition:opacity .15s; }
+.ss-plugin-row--disabled { opacity: 0.45; }
+
+.ss-plugin-top      { display:flex; align-items:center; justify-content:space-between; }
+.ss-plugin-identity { display:flex; align-items:center; gap:8px; }
+.ss-plugin-dot      { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.ss-dot--on         { background:#4f8; box-shadow:0 0 5px #4f8; }
+.ss-dot--off        { background:#333; }
+.ss-plugin-name     { font-size:13px; font-weight:500; color:#ccc; }
+.ss-plugin-ext      { font-size:11px; color:#444; font-family:monospace; }
+
+.ss-plugin-path-row { display:flex; align-items:center; gap:6px; margin-top:8px; }
+.ss-path-label      { font-size:11px; color:#555; white-space:nowrap; flex-shrink:0; width:80px; }
+
+/* ── Badge ───────────────────────────────────────────────────────────────── */
+.ss-badge           { font-size:10px; font-weight:500; padding:2px 7px; border-radius:4px;
+                       text-transform:uppercase; letter-spacing:.4px; }
+.ss-badge--snapstak { background:#1a1a3a; border:0.5px solid #3a3a6a; color:#7af; }
+    .ss-badge--framer   { background:#0a0a1a; border:0.5px solid #3344bb; color:#88aaff; }
+
+/* ── Mobile pairing ──────────────────────────────────────────────────────── */
+.pair-pin-display   { font-size:48px; font-weight:700; letter-spacing:12px; color:#fff;
+                       font-family:monospace; text-align:center; padding:20px 0 8px; }
+.pair-countdown     { display:flex; flex-direction:column; align-items:center; gap:6px; margin-bottom:10px; }
+.pair-countdown-label { font-size:12px; color:#666; }
+.pair-progress-track  { width:100%; height:3px; background:#1e1e1e; border-radius:2px; overflow:hidden; }
+.pair-progress-bar    { height:100%; background:#f8a21a; border-radius:2px; transition:width 1s linear; }
+.pair-waiting       { font-size:12px; color:#555; text-align:center; padding:4px 0; }
+.pair-spinner-row   { display:flex; align-items:center; gap:10px; padding:12px 0; }
+.pair-spinner       { width:16px; height:16px; border:2px solid #333; border-top-color:#38a3f8;
+                       border-radius:50%; animation:spin .7s linear infinite; flex-shrink:0; }
+.pair-status-text   { font-size:13px; color:#aaa; }
+@@keyframes spin { to { transform:rotate(360deg); } }
+
+/* ── Toggle switch ───────────────────────────────────────────────────────── */
+.ss-toggle          { position:relative; display:inline-block; width:36px; height:20px;
+                       flex-shrink:0; cursor:pointer; }
+.ss-toggle input    { opacity:0; width:0; height:0; position:absolute; }
+.ss-toggle-track    { position:absolute; inset:0; border-radius:10px; background:#222;
+                       border:0.5px solid #333; transition:background .2s, border-color .2s; }
+.ss-toggle-track::after {
+    content:""; position:absolute; width:14px; height:14px; border-radius:50%;
+    background:#555; top:2px; left:2px; transition:transform .2s, background .2s;
+}
+.ss-toggle input:checked + .ss-toggle-track { background:#0a2a0a; border-color:#1a5a1a; }
+.ss-toggle input:checked + .ss-toggle-track::after { transform:translateX(16px); background:#4f8; }
+</style>

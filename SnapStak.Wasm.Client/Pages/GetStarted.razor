@@ -1,0 +1,351 @@
+@page "/getstarted"
+@using SnapStak.Wasm.Client.Services
+@inject LicenceService Licence
+@inject NavigationManager Nav
+
+<div class="gs-wrap">
+
+    <div class="gs-logo">
+        <span class="gs-logo-text">Snap<em>Stak</em></span>
+        <span class="gs-logo-tag">DESKTOP</span>
+    </div>
+
+    @if (!string.IsNullOrEmpty(LockMessage))
+    {
+        <div class="gs-lock-notice">
+            <div class="gs-lock-icon">
+                <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+                    <rect x="2" y="7" width="12" height="8" rx="1.5" fill="white"/>
+                    <path d="M5 7V5.5a3 3 0 016 0V7" stroke="white" stroke-width="1.5" fill="none"/>
+                </svg>
+            </div>
+            <div>
+                <div class="gs-lock-title">Access suspended</div>
+                <div class="gs-lock-msg">@LockMessage</div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="gs-heading">Get started</div>
+        <div class="gs-sub">Two steps to unlock SnapStak Desktop.</div>
+    }
+
+    <div class="gs-step @_step1Class" id="step1">
+        <div class="gs-step-hdr">
+            <div class="gs-badge @_badge1Class">
+                @(_step1Done ? "✓" : "1")
+            </div>
+            <span class="gs-step-title @_title1Class">
+                Add your OpenRouter API key
+            </span>
+            @if (_step1Done)
+            {
+                <span class="gs-check">&#10003; Done</span>
+            }
+        </div>
+        @if (!_step1Done)
+        {
+            <div class="gs-info">Your key is stored only in your browser. It never leaves your machine — all AI requests go directly from your browser to OpenRouter.</div>
+            <input class="gs-inp" type="password" value="@_apiKey" @oninput="OnApiKeyInput" placeholder="sk-or-v1-…" />
+            <div class="gs-row">
+                <button class="gs-bp" @onclick="SaveKey">Save key</button>
+                <a class="gs-bg" href="https://openrouter.ai/keys" target="_blank">Get a key ↗</a>
+            </div>
+        }
+    </div>
+
+    <div class="gs-step @_step2Class" id="step2">
+        <div class="gs-step-hdr">
+            <div class="gs-badge @_badge2Class">
+                @(_step2Done ? "✓" : "2")
+            </div>
+            <span class="gs-step-title @_title2Class">
+                @(string.IsNullOrEmpty(LockMessage) ? "Subscribe — $10 / month" : "Resubscribe — $10 / month")
+            </span>
+            @if (_step2Done)
+            {
+                <span class="gs-check">&#10003; Done</span>
+            }
+        </div>
+        @if (_step1Done && !_step2Done)
+        {
+            <div class="gs-stripe-box">
+                <div class="gs-price-row">
+                    <span class="gs-price">$10</span>
+                    <span class="gs-price-per">/ month</span>
+                </div>
+                <div class="gs-feats">
+                    @foreach (var f in _features)
+                    {
+                        <div class="gs-feat @(f.Native ? "gs-feat-native" : string.Empty)">
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                @if (f.Native)
+                                {
+                                    <path d="M2 6h8" stroke="white" stroke-width="1.3" stroke-linecap="round"/>
+                                }
+                                else
+                                {
+                                    <path d="M2 6l2.5 2.5L10 3" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+                                }
+                            </svg>
+                            @f.Text
+                        </div>
+                    }
+                </div>
+
+                <div style="margin-bottom:12px;">
+                    <div style="font-size:11px;color:#555;margin-bottom:6px;">Your email address:</div>
+                    <input class="gs-inp" type="email" value="@_email" @oninput="OnEmailInput" placeholder="you@example.com" />
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(_email))
+                {
+                    <a class="gs-bp gs-bp-full" href="@_paystackUrl" target="_blank" @onclick="StartPolling">
+                        <svg width="13" height="13" viewBox="0 0 12 12" fill="none">
+                            <rect x="1" y="2.5" width="10" height="8" rx="1.5" stroke="black" stroke-width="1.3"/>
+                            <path d="M1 5.5h10" stroke="black" stroke-width="1.3"/>
+                        </svg>
+                        @(string.IsNullOrEmpty(LockMessage) ? "Subscribe via Paystack" : "Resubscribe via Paystack")
+                    </a>
+                }
+                else
+                {
+                    <button class="gs-bp gs-bp-full" disabled="disabled" style="opacity:0.4;cursor:not-allowed;">
+                        <svg width="13" height="13" viewBox="0 0 12 12" fill="none">
+                            <rect x="1" y="2.5" width="10" height="8" rx="1.5" stroke="black" stroke-width="1.3"/>
+                            <path d="M1 5.5h10" stroke="black" stroke-width="1.3"/>
+                        </svg>
+                        @(string.IsNullOrEmpty(LockMessage) ? "Subscribe via Paystack" : "Resubscribe via Paystack")
+                    </button>
+                }
+
+                @if (_polling)
+                {
+                    <div style="margin-top:12px;padding:10px 12px;background:#0a1220;border:0.5px solid #1a2a3a;border-radius:8px;font-size:12px;color:#68b;">
+                        ⏳ Waiting for payment confirmation — complete your payment in the Paystack window…
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(_activateError))
+                {
+                    <div style="font-size:11px;color:#f88;margin-top:8px;">@_activateError</div>
+                }
+            </div>
+        }
+    </div>
+
+    @if (_allDone)
+    {
+        <div class="gs-ready">
+            <div class="gs-ready-icon">
+                <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
+                    <path d="M2 7l3.5 3.5L12 3" stroke="white" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+            </div>
+            <div class="gs-ready-text">
+                You're all set — every tab is now unlocked.<br>
+                <strong>Go to Deconstruct</strong> and open any website in Chrome.
+            </div>
+        </div>
+    }
+
+</div>
+
+@code {
+    private static readonly HttpClient _http = new();
+
+    private string _step1Class  => _step1Done ? "gs-step-done" : "gs-step-active";
+    private string _badge1Class => _step1Done ? "gs-badge-done" : "gs-badge-act";
+    private string _title1Class => _step1Done ? "gs-t-done" : "gs-t-act";
+    private string _step2Class  => _step2Done ? "gs-step-done" : (_step1Done ? "gs-step-active" : "gs-step-pending");
+    private string _badge2Class => _step2Done ? "gs-badge-done" : (_step1Done ? "gs-badge-act" : "gs-badge-pend");
+    private string _title2Class => _step2Done ? "gs-t-done" : (_step1Done ? "gs-t-act" : string.Empty);
+    private string _paystackUrl => $"https://paystack.shop/pay/tdwg1-8fa5?email={Uri.EscapeDataString(_email)}";
+
+    private string LockMessage { get; set; } = string.Empty;
+
+    private string _apiKey    = string.Empty;
+    private bool   _step1Done = false;
+    private bool   _step2Done = false;
+    private bool   _allDone   = false;
+
+    private record Feature(string Text, bool Native = false);
+    private readonly Feature[] _features =
+    [
+        new("Unlimited deconstructions"),
+        new("11 web frameworks — React, Vue, Next.js, Svelte, Angular, Astro…"),
+        new("Penpot design file export"),
+        new("All processing on your own machine"),
+        new("Cancel any time via Stripe"),
+        new("Native frameworks available in SnapStak Mobile on the App Store", Native: true),
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var uri   = new Uri(Nav.Uri);
+        var query = uri.Query.TrimStart('?');
+        foreach (var part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var kv = part.Split('=', 2);
+            if (kv.Length == 2 && Uri.UnescapeDataString(kv[0]) == "msg")
+            {
+                LockMessage = Uri.UnescapeDataString(kv[1]);
+                break;
+            }
+        }
+
+        _apiKey    = await Licence.GetApiKeyAsync() ?? string.Empty;
+        _step1Done = !string.IsNullOrWhiteSpace(_apiKey);
+        _step2Done = await Licence.IsLicenceValidAsync();
+        _allDone   = _step1Done && _step2Done;
+    }
+
+    private void OnApiKeyInput(ChangeEventArgs e)
+        => _apiKey = e.Value?.ToString() ?? string.Empty;
+
+    private void OnEmailInput(ChangeEventArgs e)
+        => _email = e.Value?.ToString() ?? string.Empty;
+
+    private async Task SaveKey()
+    {
+        if (string.IsNullOrWhiteSpace(_apiKey)) return;
+        await Licence.SetApiKeyAsync(_apiKey);
+        _step1Done = true;
+        StateHasChanged();
+    }
+
+    private string _email         = string.Empty;
+    private string _subCode       = string.Empty;
+    private bool   _polling       = false;
+    private string _activateError = string.Empty;
+
+    private void StartPolling()
+    {
+        if (string.IsNullOrWhiteSpace(_email)) return;
+        _polling       = true;
+        _activateError = string.Empty;
+        StateHasChanged();
+        _ = PollForSubscriptionAsync();
+    }
+
+    private async Task PollForSubscriptionAsync()
+    {
+        var deadline = DateTime.UtcNow.AddMinutes(10);
+        while (DateTime.UtcNow < deadline && _polling)
+        {
+            await Task.Delay(4000);
+            try
+            {
+                var encodedEmail = Uri.EscapeDataString(_email.Trim().ToLower());
+                using var req  = new HttpRequestMessage(HttpMethod.Get,
+                    $"https://subscriptions.snapstak.ai/api/subscription-by-email/{encodedEmail}");
+                using var resp = await _http.SendAsync(req);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var json     = await resp.Content.ReadAsStringAsync();
+                    dynamic? obj = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+                    bool found   = (bool)(obj?.found ?? false);
+                    if (found)
+                    {
+                        _subCode = (string)(obj?.subscriptionCode ?? string.Empty);
+                        _polling = false;
+                        await InvokeAsync(StateHasChanged);
+                        await ActivateSubscription();
+                        return;
+                    }
+                }
+            }
+            catch { /* keep polling */ }
+            await InvokeAsync(StateHasChanged);
+        }
+        _polling       = false;
+        _activateError = "Payment not detected after 10 minutes. Please contact support@snapstak.ai.";
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ActivateSubscription()
+    {
+        if (string.IsNullOrWhiteSpace(_subCode)) return;
+        _activateError = string.Empty;
+        StateHasChanged();
+
+        try
+        {
+            var result = await Licence.ValidateSubscriptionAsync(_subCode);
+            if (result.Valid)
+            {
+                _step2Done = true;
+                _allDone   = true;
+                StateHasChanged();
+                await Task.Delay(1200);
+                Nav.NavigateTo("/");
+            }
+            else
+            {
+                _activateError = result.Message ?? "Subscription could not be validated. Check your code and try again.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _activateError = ex.Message;
+        }
+        finally
+        {
+            StateHasChanged();
+        }
+    }
+}
+
+<style>
+.gs-wrap      { max-width:480px; margin:0 auto; padding:32px 24px; display:flex; flex-direction:column; gap:14px; }
+.gs-logo      { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.gs-logo-text { font-size:20px; font-weight:500; color:#fff; }
+.gs-logo-text em { color:#38a3f8; font-style:normal; }
+.gs-logo-tag  { font-size:9px; font-weight:500; color:#38a3f8; background:#0a1929; padding:2px 6px; border-radius:4px; letter-spacing:.6px; }
+.gs-heading   { font-size:22px; font-weight:500; color:#fff; }
+.gs-sub       { font-size:13px; color:#555; margin-top:-8px; }
+
+.gs-lock-notice { display:flex; align-items:flex-start; gap:14px; padding:14px; background:#1a0a0a; border:0.5px solid #440000; border-radius:10px; }
+.gs-lock-icon   { width:36px; height:36px; border-radius:50%; background:#2a0a0a; border:0.5px solid #440000; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.gs-lock-title  { font-size:14px; font-weight:500; color:#f88; margin-bottom:4px; }
+.gs-lock-msg    { font-size:12px; color:#a44; line-height:1.6; }
+
+.gs-step        { border-radius:10px; border:0.5px solid #1e1e1e; background:#141414; padding:15px; transition:border-color .2s; }
+.gs-step-active { border-color:#1a3a4a; }
+.gs-step-done   { border-color:#1a3a1a; background:#0a110a; }
+.gs-step-pending{ opacity:.5; }
+.gs-step-hdr    { display:flex; align-items:center; gap:10px; margin-bottom:11px; }
+.gs-badge       { width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:500; flex-shrink:0; }
+.gs-badge-pend  { background:#1a1a1a; border:0.5px solid #2a2a2a; color:#333; }
+.gs-badge-act   { background:#0a1929; border:0.5px solid #1a3a5a; color:#38a3f8; }
+.gs-badge-done  { background:#0a2a0a; border:0.5px solid #1a4a1a; color:#4f8; }
+.gs-step-title  { font-size:13px; font-weight:500; color:#666; }
+.gs-t-act       { color:#fff; }
+.gs-t-done      { color:#4f8; }
+.gs-check       { margin-left:auto; font-size:11px; color:#4f8; }
+
+.gs-info   { padding:9px 12px; border-radius:7px; font-size:12px; line-height:1.5; background:#0a1220; border:0.5px solid #1a2a3a; color:#68b; margin-bottom:9px; }
+.gs-inp    { width:100%; background:#0a0a0a; border:0.5px solid #2a2a2a; border-radius:8px; padding:8px 12px; color:#e8e8e8; font-size:13px; font-family:var(--font-mono); outline:none; }
+.gs-inp:focus { border-color:#38a3f8; }
+.gs-row    { display:flex; gap:8px; margin-top:9px; }
+.gs-bp     { background:#38a3f8; color:#000; border:none; border-radius:7px; padding:8px 16px; font-size:13px; font-weight:500; cursor:pointer; display:inline-flex; align-items:center; gap:6px; text-decoration:none; }
+.gs-bp:hover { background:#5ab5fa; }
+.gs-bp-full { width:100%; justify-content:center; padding:11px; }
+.gs-bg     { background:transparent; color:#555; border:0.5px solid #2a2a2a; border-radius:7px; padding:8px 13px; font-size:12px; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; }
+.gs-bg:hover { border-color:#444; color:#aaa; }
+.gs-bg-full { width:100%; justify-content:center; }
+
+.gs-stripe-box  { background:#0a0f1a; border:0.5px solid #1a2a3a; border-radius:9px; padding:15px; margin-top:4px; }
+.gs-price-row   { display:flex; align-items:baseline; gap:3px; margin-bottom:9px; }
+.gs-price       { font-size:28px; font-weight:500; color:#fff; }
+.gs-price-per   { font-size:13px; color:#888; }
+.gs-feats       { display:flex; flex-direction:column; gap:6px; margin-bottom:13px; }
+.gs-feat        { display:flex; align-items:center; gap:8px; font-size:12px; color:#888; }
+.gs-feat-native { color:#555; }
+.gs-feat svg    { flex-shrink:0; }
+
+.gs-ready       { background:#0a1e0a; border:0.5px solid #1a4a1a; border-radius:10px; padding:15px; display:flex; align-items:center; gap:13px; }
+.gs-ready-icon  { width:30px; height:30px; border-radius:50%; background:#0f3a0f; border:0.5px solid #1a4a1a; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.gs-ready-text  { font-size:13px; color:#4f8; line-height:1.5; }
+.gs-ready-text strong { color:#6fc; }
+</style>

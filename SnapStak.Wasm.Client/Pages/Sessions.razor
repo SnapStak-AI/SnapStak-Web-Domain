@@ -1,0 +1,96 @@
+@page "/sessions"
+@using SnapStak.Wasm.Client.Services
+@using SnapStak.Wasm.Client.Storage
+@using SnapStak.Wasm.Client.Models.Session
+@inject IPillarStorage Storage
+@inject LicenceService Licence
+@inject NavigationManager Nav
+
+<div class="page-sessions">
+
+    <div class="page-header">
+        <h1 class="page-title">Sessions</h1>
+        <p class="page-sub">Components stored in IndexedDB on this device.</p>
+    </div>
+
+    @if (_manifest == null || _manifest.Components.Count == 0)
+    {
+        <div class="empty-state">
+            <p>No components deconstructed yet.</p>
+            <a class="btn btn--primary" href="/">Start Deconstructing</a>
+        </div>
+    }
+    else
+    {
+        <div class="session-grid">
+            @foreach (var comp in _manifest.Components.Where(c => !c.IsMaster))
+            {
+                <div class="session-card @(comp.Status == SessionStatus.Complete ? "session-card--done" : "")">
+                    <div class="session-card__id">@comp.ComponentId</div>
+                    <div class="session-card__zone">@comp.Zone</div>
+                    <div class="session-card__pillars">
+                        <span class="pillar @(comp.PillarStatus.Structure  ? "pillar--ok" : "pillar--miss")" title="Structure">S</span>
+                        <span class="pillar @(comp.PillarStatus.Behaviour  ? "pillar--ok" : "pillar--miss")" title="Behaviour">B</span>
+                        <span class="pillar @(comp.PillarStatus.Influence  ? "pillar--ok" : "pillar--miss")" title="Influence">I</span>
+                        <span class="pillar @(comp.PillarStatus.Objective  ? "pillar--ok" : "pillar--miss")" title="Objective">O</span>
+                    </div>
+                    <button class="btn btn--primary btn--sm"
+                            @onclick="() => GenerateComponent(comp.ComponentId)">
+                        Generate
+                    </button>
+                </div>
+            }
+        </div>
+
+        <button class="btn btn--ghost" @onclick="ClearAll">Clear All Sessions</button>
+    }
+
+</div>
+
+@code {
+    private SessionManifest? _manifest;
+    private string           _userUuid = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userUuid = await Licence.GetUserUuidAsync();
+        _manifest = Storage.ReadSessionManifest(_userUuid);
+    }
+
+    private void GenerateComponent(string componentId)
+        => Nav.NavigateTo($"/?component={componentId}");
+
+    private void ClearAll()
+    {
+        if (_manifest == null) return;
+        Storage.CleanupSessionFiles(_userUuid, _manifest);
+        _manifest = null;
+    }
+}
+
+<style>
+    .page-sessions { display: flex; flex-direction: column; gap: 20px; }
+    .page-header   { margin-bottom: 8px; }
+    .page-title    { font-size: 28px; font-weight: 700; color: #fff; }
+    .page-sub      { font-size: 14px; color: #888; margin-top: 6px; }
+
+    .empty-state   { text-align: center; padding: 60px 0; color: #666; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+
+    .session-grid  { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .session-card  { background: #141414; border: 1px solid #222; border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .session-card--done { border-color: #1a3a1a; }
+    .session-card__id   { font-family: monospace; font-size: 12px; color: #888; word-break: break-all; }
+    .session-card__zone { font-size: 13px; font-weight: 600; color: #ccc; }
+    .session-card__pillars { display: flex; gap: 6px; }
+
+    .pillar      { width: 24px; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+    .pillar--ok  { background: #0a2a0a; color: #4f8; border: 1px solid #1a4a1a; }
+    .pillar--miss{ background: #1a0a0a; color: #644; border: 1px solid #2a1a1a; }
+
+    .btn     { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s; text-decoration: none; display: inline-block; }
+    .btn--sm { padding: 6px 14px; font-size: 12px; }
+    .btn--primary { background: #4af; color: #000; }
+    .btn--primary:hover { background: #6cf; }
+    .btn--ghost   { background: transparent; color: #666; border: 1px solid #222; }
+    .btn--ghost:hover { border-color: #333; color: #aaa; }
+</style>

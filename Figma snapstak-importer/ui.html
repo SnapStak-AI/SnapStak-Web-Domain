@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SnapStak Importer</title>
+  <style>
+    /* ── Reset ──────────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Figma theme tokens ─────────────────────────────────────────────────── */
+    :root {
+      --bg:        var(--figma-color-bg,           #ffffff);
+      --bg-sec:    var(--figma-color-bg-secondary,  #f5f5f5);
+      --border:    var(--figma-color-border,        #e6e6e6);
+      --text:      var(--figma-color-text,          #1a1a1a);
+      --text-sec:  var(--figma-color-text-secondary,#757575);
+      --brand:     var(--figma-color-brand,         #7b61ff);
+      --brand-hover: #6b4fff;
+      --green:     #1bc47d;
+      --red:       #f24822;
+      --radius:    6px;
+      --font:      'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-logo {
+      width: 28px;
+      height: 28px;
+      background: #1b3a6b;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .header-logo svg { width: 16px; height: 16px; }
+    .header-title  { font-size: 14px; font-weight: 600; }
+    .header-sub    { font-size: 11px; color: var(--text-sec); }
+
+    /* ── Form ───────────────────────────────────────────────────────────────── */
+    .field-group { display: flex; flex-direction: column; gap: 6px; }
+    label        { font-size: 11px; font-weight: 500; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.4px; }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus { border-color: var(--brand); }
+    input[type="text"]::placeholder { color: var(--text-sec); }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────────── */
+    .btn-row { display: flex; gap: 8px; }
+
+    button {
+      flex: 1;
+      padding: 9px 14px;
+      border: none;
+      border-radius: var(--radius);
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--brand);
+      color: #ffffff;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--brand-hover); }
+
+    .btn-secondary {
+      background: var(--bg-sec);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover:not(:disabled) { background: var(--border); }
+
+    /* ── Status / feedback ───────────────────────────────────────────────────── */
+    .status {
+      display: none;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .status.visible { display: flex; }
+    .status.info    { background: #f0ecff; color: #4a2da8; }
+    .status.success { background: #e6faf2; color: #0d7a4a; }
+    .status.error   { background: #fff0ee; color: #c22a10; }
+
+    .status-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+    /* ── Progress bar ────────────────────────────────────────────────────────── */
+    .progress-wrap {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .progress-wrap.visible { display: flex; }
+    .progress-label { font-size: 11px; color: var(--text-sec); }
+    .progress-bar   { height: 3px; background: var(--bg-sec); border-radius: 2px; overflow: hidden; }
+    .progress-fill  {
+      height: 100%;
+      background: var(--brand);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    /* ── Divider ─────────────────────────────────────────────────────────────── */
+    hr { border: none; border-top: 1px solid var(--border); }
+
+    /* ── Help text ───────────────────────────────────────────────────────────── */
+    .help { font-size: 11px; color: var(--text-sec); line-height: 1.55; }
+    .help a { color: var(--brand); text-decoration: none; }
+    .help a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-logo">
+      <!-- SnapStak "S" monogram -->
+      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 5.5C4 4.12 5.12 3 6.5 3H10.5C11.33 3 12 3.67 12 4.5C12 5.33 11.33 6 10.5 6H6.5C5.12 6 4 7.12 4 8.5C4 9.88 5.12 11 6.5 11H10C10.55 11 11 11.45 11 12C11 12.55 10.55 13 10 13H5.5C4.67 13 4 12.33 4 11.5" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div>
+      <div class="header-title">SnapStak Importer</div>
+      <div class="header-sub">Import a web capture into Figma</div>
+    </div>
+  </div>
+
+  <!-- Server URL field -->
+  <div class="field-group">
+    <label for="server-url">CON10X Server URL</label>
+    <input
+      type="text"
+      id="server-url"
+      value="http://localhost:5174"
+      placeholder="http://localhost:5174"
+      autocomplete="off"
+      spellcheck="false"
+    />
+  </div>
+
+  <!-- Component ID field -->
+  <div class="field-group">
+    <label for="component-id">Component ID</label>
+    <input
+      type="text"
+      id="component-id"
+      placeholder="example.com_1713512345"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <span class="help">
+      Find the Component ID in the SnapStak UI after capturing a page.
+    </span>
+  </div>
+
+  <!-- Action buttons -->
+  <div class="btn-row">
+    <button class="btn-primary" id="btn-import" disabled>Import</button>
+    <button class="btn-secondary" id="btn-cancel">Cancel</button>
+  </div>
+
+  <!-- Progress indicator -->
+  <div class="progress-wrap" id="progress-wrap">
+    <div class="progress-label" id="progress-label">Fetching design…</div>
+    <div class="progress-bar">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+  </div>
+
+  <!-- Status message -->
+  <div class="status" id="status" role="status">
+    <span class="status-icon" id="status-icon"></span>
+    <span id="status-text"></span>
+  </div>
+
+  <hr />
+
+  <p class="help">
+    Make sure the CON10X server is running and you have captured at least
+    one page with the SnapStak extension. The importer fetches
+    <code>.figma.svg</code> from the server and creates editable Figma
+    layers from it.
+    <br><br>
+    <a href="https://snapstak.ai/docs/figma" target="_blank">
+      SnapStak documentation →
+    </a>
+  </p>
+
+  <script>
+    // ── State ─────────────────────────────────────────────────────────────────
+
+    let pluginReady = false;
+    let importing   = false;
+
+    // ── DOM refs ──────────────────────────────────────────────────────────────
+
+    const $serverUrl    = /** @type {HTMLInputElement} */ (document.getElementById('server-url'));
+    const $componentId  = /** @type {HTMLInputElement} */ (document.getElementById('component-id'));
+    const $btnImport    = /** @type {HTMLButtonElement} */ (document.getElementById('btn-import'));
+    const $btnCancel    = /** @type {HTMLButtonElement} */ (document.getElementById('btn-cancel'));
+    const $progressWrap = document.getElementById('progress-wrap');
+    const $progressFill = document.getElementById('progress-fill');
+    const $progressLabel= document.getElementById('progress-label');
+    const $status       = document.getElementById('status');
+    const $statusIcon   = document.getElementById('status-icon');
+    const $statusText   = document.getElementById('status-text');
+
+    // ── Enable Import button when component ID is non-empty ───────────────────
+
+    function updateImportButton() {
+      $btnImport.disabled = !pluginReady || importing ||
+                            $componentId.value.trim().length === 0;
+    }
+
+    $componentId.addEventListener('input', updateImportButton);
+    $serverUrl.addEventListener('input', updateImportButton);
+
+    // ── Status helpers ────────────────────────────────────────────────────────
+
+    function showStatus(type, icon, text) {
+      $status.className = `status visible ${type}`;
+      $statusIcon.textContent = icon;
+      $statusText.textContent = text;
+    }
+
+    function hideStatus() {
+      $status.className = 'status';
+    }
+
+    function setProgress(pct, label) {
+      $progressWrap.classList.toggle('visible', pct > 0 && pct < 100);
+      $progressFill.style.width = pct + '%';
+      if (label) $progressLabel.textContent = label;
+    }
+
+    // ── Messages from the plugin sandbox ─────────────────────────────────────
+
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+
+      if (msg.type === 'ready') {
+        pluginReady = true;
+        updateImportButton();
+      }
+
+      if (msg.type === 'done') {
+        setProgress(100, 'Done');
+        showStatus('success', '✅', `"${msg.frameName}" added to the current page.`);
+        setImporting(false);
+        // Plugin closes itself after a brief delay — nothing more to do here
+      }
+
+      if (msg.type === 'error') {
+        setProgress(0, '');
+        showStatus('error', '❌', msg.message || 'Import failed. Check the console for details.');
+        setImporting(false);
+      }
+    };
+
+    // ── Import flow ───────────────────────────────────────────────────────────
+
+    function setImporting(state) {
+      importing = state;
+      $btnImport.disabled  = state || !pluginReady;
+      $btnCancel.disabled  = state;
+      updateImportButton();
+    }
+
+    $btnImport.addEventListener('click', async () => {
+      const serverUrl   = $serverUrl.value.trim().replace(/\/$/, '');
+      const componentId = $componentId.value.trim();
+
+      if (!componentId) {
+        showStatus('error', '⚠️', 'Enter a Component ID.');
+        return;
+      }
+
+      hideStatus();
+      setImporting(true);
+      setProgress(15, 'Connecting to CON10X server…');
+
+      try {
+        // ── Step 1: fetch the .figma.svg from the CON10X server ───────────────
+        // The UI iframe CAN make network requests (unlike the sandbox).
+        // We fetch the file here and pass the SVG string to the sandbox.
+        const svgUrl = `${serverUrl}/api/figma/svg?componentId=${encodeURIComponent(componentId)}`;
+        setProgress(30, 'Fetching design SVG…');
+
+        const response = await fetch(svgUrl);
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          throw new Error(`Server returned ${response.status}: ${body || response.statusText}`);
+        }
+
+        setProgress(60, 'Parsing design…');
+        const svgString = await response.text();
+
+        if (!svgString.includes('<svg')) {
+          throw new Error('Server response does not appear to be a valid SVG file.');
+        }
+
+        setProgress(80, 'Importing into Figma…');
+
+        // ── Step 2: send to the plugin sandbox for createNodeFromSvg ─────────
+        parent.postMessage({
+          pluginMessage: {
+            type:      'import-svg',
+            svgString,
+            title:     componentId,
+          }
+        }, '*');
+
+        // The sandbox will send 'done' or 'error' back — handled above
+
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setProgress(0, '');
+        showStatus('error', '❌', message);
+        setImporting(false);
+      }
+    });
+
+    // ── Cancel ────────────────────────────────────────────────────────────────
+
+    $btnCancel.addEventListener('click', () => {
+      parent.postMessage({ pluginMessage: { type: 'cancel' } }, '*');
+    });
+
+    // ── Restore last-used values from clientStorage ───────────────────────────
+    // (The sandbox reads clientStorage and sends it to us via a 'restore' message)
+    // For now, read from sessionStorage as a lightweight alternative
+    const savedServer = sessionStorage.getItem('snapstak-server');
+    const savedComp   = sessionStorage.getItem('snapstak-component');
+    if (savedServer) $serverUrl.value   = savedServer;
+    if (savedComp)   $componentId.value = savedComp;
+    updateImportButton();
+
+    // Persist on change
+    $serverUrl.addEventListener('change', () =>
+      sessionStorage.setItem('snapstak-server', $serverUrl.value));
+    $componentId.addEventListener('change', () =>
+      sessionStorage.setItem('snapstak-component', $componentId.value));
+  </script>
+</body>
+</html>

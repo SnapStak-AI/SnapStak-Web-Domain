@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SnapStak — CON10X Engine</title>
+    <base href="/" />
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: #0d0d0d;
+        }
+
+        #app {
+            min-height: 100vh;
+        }
+
+        .ls {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #0d0d0d;
+            color: #888;
+            font-family: -apple-system,sans-serif;
+            gap: 16px;
+        }
+
+        .ll {
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .lt {
+            font-size: 11px;
+            color: #4af;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .lb {
+            width: 200px;
+            height: 2px;
+            background: #222;
+            border-radius: 1px;
+            overflow: hidden;
+        }
+
+        .lf {
+            height: 100%;
+            width: 0;
+            background: #4af;
+            animation: ld 1.5s ease-out forwards;
+        }
+
+        @keyframes ld {
+            to {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="ls">
+            <div class="ll">SnapStak</div>
+            <div class="lt">CON10X Engine</div>
+            <div class="lb"><div class="lf"></div></div>
+            <div>Loading…</div>
+        </div>
+    </div>
+
+    <!-- IndexedDB storage (values are pre-encrypted by C# before reaching here) -->
+    <script src="js/SnapStakIdb.js"></script>
+
+    <!-- AES-GCM 256-bit encryption via Web Crypto API (production only) -->
+    <script src="js/SnapStakCrypto.js"></script>
+
+    <!-- Extension bridge — detects bridge.js and sends content.js for injection -->
+    <script src="js/SnapStakBridge.js"></script>
+
+    <script>
+        window.__snapstak_download = function (bytes, filename) {
+            const blob = new Blob([new Uint8Array(bytes)], { type: 'application/zip' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename; a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        };
+        window.__snapstak_handlers = [];
+        window.__snapstak_register_handler = function (ref, method) { window.__snapstak_handlers.push({ ref, method }); };
+        window.__snapstak_unregister_handlers = function () { window.__snapstak_handlers = []; };
+        window.addEventListener('message', function (e) {
+            if (!e.data || !e.data.type) return;
+            if (e.data.type === 'SNAPSTAK_SNAPSHOT') {
+                const p = JSON.stringify(e.data.payload);
+                window.__snapstak_handlers.forEach(h => h.ref.invokeMethodAsync(h.method, p).catch(() => { }));
+            }
+        });
+    </script>
+
+    <script src="js/SnapStakSse.js"></script>
+    <script src="_framework/blazor.webassembly.js"></script>
+</body>
+</html>

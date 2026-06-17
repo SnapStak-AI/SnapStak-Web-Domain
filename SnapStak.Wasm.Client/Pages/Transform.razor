@@ -1,0 +1,720 @@
+@page "/"
+@using SnapStak.Wasm.Client.Services
+@using SnapStak.Wasm.Client.Models.Requests
+@using SnapStak.Wasm.Client.Storage
+@using Microsoft.JSInterop
+@inject ConteXPipelineService Pipeline
+@inject LicenceService Licence
+@inject SnapshotBridgeService Bridge
+@inject IPillarStorage Storage
+@inject IJSRuntime JS
+@inject HttpClient Http
+@implements IDisposable
+
+<div class="page-transform">
+
+    <div class="page-header">
+        <h1 class="page-title">CON10X Engine</h1>
+        <p class="page-sub">Transform any website snapshot into production-ready code in 10 frameworks.</p>
+    </div>
+
+    @if (!_isReady)
+    {
+        <div class="notice notice--warn">
+            <strong>Setup required.</strong> Add your OpenRouter API key and activate your
+            subscription in <a href="/settings">Settings</a>.
+        </div>
+    }
+
+    <!-- Live connection status -->
+    <div class="connection-bar @(_lastSnapshot != null ? "connection-bar--live" : "")">
+        <span class="connection-dot @(_lastSnapshot != null ? "connection-dot--live" : "")"></span>
+        <span>@(_lastSnapshot != null
+            ? $"Snapshot received — {_lastSnapshot.ComponentId} ({_lastSnapshot.DomSnapshot?.Elements.Count ?? 0} elements)"
+            : "Waiting for extension — open any website and click Deconstruct in the extension")</span>
+    </div>
+
+    <!-- Step 1: Component -->
+    <div class="card">
+        <h2 class="card__title">1 — Component</h2>
+        @if (_lastSnapshot != null)
+        {
+            <div class="snapshot-info">
+                <div class="snapshot-info__row">
+                    <span class="snapshot-info__label">ID</span>
+                    <span class="snapshot-info__value mono">@_lastSnapshot.ComponentId</span>
+                </div>
+                <div class="snapshot-info__row">
+                    <span class="snapshot-info__label">URL</span>
+                    <span class="snapshot-info__value mono">@_lastSnapshot.Url</span>
+                </div>
+                <div class="snapshot-info__row">
+                    <span class="snapshot-info__label">Elements</span>
+                    <span class="snapshot-info__value">@(_lastSnapshot.DomSnapshot?.Elements.Count ?? 0)</span>
+                </div>
+                <div class="snapshot-info__row">
+                    <span class="snapshot-info__label">Viewport</span>
+                    <span class="snapshot-info__value">@(_lastSnapshot.DomSnapshot?.PageWidth ?? 0) × @(_lastSnapshot.DomSnapshot?.PageHeight ?? 0) px</span>
+                </div>
+            </div>
+        }
+        else
+        {
+            <p class="card__desc">No snapshot yet. Click <strong>Deconstruct</strong> in the SnapStak extension popup.</p>
+        }
+    </div>
+
+    <!-- Step 2: Framework -->
+    <div class="card">
+        <h2 class="card__title">2 — Output Framework</h2>
+        <div class="framework-grid">
+            @foreach (var fw in _webFrameworks)
+            {
+                <button class="fw-btn @(_framework == fw.Key ? "fw-btn--active" : "")"
+                        @onclick="() => _framework = fw.Key">
+                    @if (!string.IsNullOrEmpty(fw.Value))
+                    {
+                        <img class="fw-icon" src="@fw.Value" alt="@fw.Key" />
+                    }
+                    <span>@fw.Key</span>
+                </button>
+            }
+        </div>
+        <div class="option-row">
+            <label class="opt-label">Style</label>
+            <select class="field field--sm" @bind="_styleOutput">
+                <option value="css">CSS</option>
+                <option value="tailwind">Tailwind</option>
+            </select>
+            <label class="opt-label">Language</label>
+            <select class="field field--sm" @bind="_language">
+                <option value="js">JavaScript</option>
+                <option value="ts">TypeScript</option>
+            </select>
+            <label class="opt-label">Mode</label>
+            <select class="field field--sm" @bind="_unifiedMode">
+                <option value="true">Unified</option>
+                <option value="false">Separate</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- Step 3: Generate -->
+    <div class="card">
+        <h2 class="card__title">3 — Generate Framework Code</h2>
+
+        @if (_isWorking)
+        {
+            <div class="progress-bar">
+                <div class="progress-bar__fill" style="width: @(_progress)%"></div>
+            </div>
+            <p class="progress-msg">@_progressMsg</p>
+        }
+        else
+        {
+            <div class="action-row">
+                <button class="btn btn--primary"
+                        @onclick="Generate"
+                        disabled="@(!_isReady || (string.IsNullOrEmpty(ActiveComponentId)))">
+                    Generate Code
+                </button>
+                <button class="btn btn--ghost" @onclick="ClearSession">Clear</button>
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <div class="notice notice--error">@_error</div>
+        }
+
+        @if (_result != null && _result.Success)
+        {
+            <div class="result-panel">
+                <div class="result-panel__header">
+                    <span class="result-panel__name">@_result.ComponentName</span>
+                    <span class="result-panel__meta">
+                        @_result.Framework · @_result.Stats.DurationMs ms · @_result.Stats.ObjectCount objects
+                    </span>
+                </div>
+                <div class="result-panel__actions">
+                    <button class="btn btn--success" @onclick="DownloadZip">
+                        ⬇ Download @(_result.ComponentName).zip
+                    </button>
+                    @if (_framerConfigured && _result.Framework is "react" or "nextjs")
+                    {
+                        <button class="btn btn--framer"
+                                @onclick="SendToFramer"
+                                disabled="@_framerSending">
+                            @(_framerSending ? "Sending…" : "Send to Framer")
+                        </button>
+                    }
+                </div>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_framerError))
+            {
+                <div class="notice notice--error">@_framerError</div>
+            }
+            @if (!string.IsNullOrEmpty(_framerSuccess))
+            {
+                <div class="notice notice--framer">@_framerSuccess</div>
+            }
+        }
+    </div>
+
+    <!-- Step 4: Send to Canva -->
+    <div class="card">
+        <h2 class="card__title">4 — Send to Canva</h2>
+
+        @if (!_canvaConnected)
+        {
+            <p class="card__desc">Connect your Canva account to send any captured component directly into Canva as an editable design.</p>
+            <div class="action-row">
+                <button class="btn btn--canva" @onclick="ConnectCanva" disabled="@(string.IsNullOrEmpty(ActiveComponentId))">
+                    Connect Canva
+                </button>
+            </div>
+        }
+        else
+        {
+            <p class="card__desc">Your Canva account is connected. Click below to send the current component to Canva as an editable design.</p>
+            <div class="action-row">
+                <button class="btn btn--canva" @onclick="SendToCanva"
+                        disabled="@(_canvaSending || string.IsNullOrEmpty(ActiveComponentId))">
+                    @(_canvaSending ? "Sending…" : "Send to Canva")
+                </button>
+                <button class="btn btn--ghost btn--sm" @onclick="DisconnectCanva">Disconnect</button>
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_canvaError))
+        {
+            <div class="notice notice--error">@_canvaError</div>
+        }
+
+        @if (!string.IsNullOrEmpty(_canvaEditUrl))
+        {
+            <div class="canva-result">
+                <span class="canva-result__label">✅ Design ready in Canva</span>
+                <a class="btn btn--canva-open" href="@_canvaEditUrl" target="_blank">
+                    Open in Canva →
+                </a>
+            </div>
+        }
+    </div>
+
+</div>
+
+@code {
+    private bool   _isReady     = false;
+    private bool   _isWorking   = false;
+    private string _framework   = "react";
+    private string _styleOutput = "css";
+    private string _language    = "js";
+    private string _unifiedMode = "true";
+    private int    _progress    = 0;
+    private string _progressMsg = string.Empty;
+    private string _error       = string.Empty;
+
+    private TransformRequest? _lastSnapshot;
+    private WasmGenerateResult? _result;
+
+    // ── Framer integration state ─────────────────────────────────────────────
+    private bool   _framerConfigured = false;
+    private bool   _framerSending    = false;
+    private string _framerError      = string.Empty;
+    private string _framerSuccess    = string.Empty;
+
+    // ── Canva integration state ───────────────────────────────────────────────
+    private bool   _canvaConnected = false;
+    private bool   _canvaSending   = false;
+    private string _canvaError     = string.Empty;
+    private string _canvaEditUrl   = string.Empty;
+
+    private string ActiveComponentId =>
+        _lastSnapshot?.ComponentId ?? string.Empty;
+
+    private static readonly Dictionary<string, string> _webFrameworks = new()
+    {
+        { "react",   "icons/frameworks/react.svg"   },
+        { "nextjs",  "icons/frameworks/nextjs.svg"  },
+        { "vue",     "icons/frameworks/vue.svg"     },
+        { "nuxt",    "icons/frameworks/nuxt.svg"    },
+        { "svelte",  "icons/frameworks/svelte.svg"  },
+        { "angular", "icons/frameworks/angular.svg" },
+        { "vanilla", ""                             },
+        { "astro",   "icons/frameworks/astro.svg"   },
+        { "solidjs", "icons/frameworks/solidjs.svg" },
+        { "alpine",  ""                             },
+    };
+
+    protected override Task OnInitializedAsync()
+    {
+        // Phase 1: restore snapshot using direct key — no async JS interop,
+        // so the first render shows data immediately with zero delay.
+        try
+        {
+            var raw = Storage.ReadSnapshotDirect();
+            if (!string.IsNullOrEmpty(raw))
+            {
+                var restored = Newtonsoft.Json.JsonConvert.DeserializeObject<TransformRequest>(raw);
+                if (restored != null) _lastSnapshot = restored;
+            }
+        }
+        catch { }
+
+        // Phase 2: fire remaining async work after first render
+        _ = InvokeAsync(async () =>
+        {
+            _isReady = await Licence.IsReadyAsync();
+            StateHasChanged();
+
+            // Re-run transform to ensure pillar files are in IndexedDB
+            if (_lastSnapshot != null)
+            {
+                try { await Pipeline.TransformAsync(_lastSnapshot); }
+                catch (Exception ex)
+                { Console.WriteLine($"[Index] Restore transform failed: {ex.Message}"); }
+            }
+
+            Bridge.OnSnapshot += OnSnapshotReceived;
+            try { await Bridge.ConnectAsync(); }
+            catch (Exception ex)
+            { Console.WriteLine($"[Index] Bridge connect failed: {ex.Message}"); }
+
+            // Check if Framer credentials are configured
+            await CheckFramerStatusAsync();
+
+            // Check if user already has Canva connected (token file exists on server)
+            await CheckCanvaStatusAsync();
+
+            // Detect return from Canva OAuth — server redirects to /?canva=connected
+            try
+            {
+                var href = await JS.InvokeAsync<string>("eval", "window.location.href");
+                if (href.Contains("canva=connected"))
+                {
+                    _canvaConnected = true;
+                    await JS.InvokeVoidAsync("eval",
+                        "history.replaceState(null, '', window.location.pathname)");
+                    StateHasChanged();
+                }
+            }
+            catch { }
+        });
+        return Task.CompletedTask;
+    }
+
+    // ── Framer integration ───────────────────────────────────────────────────
+
+    private async Task CheckFramerStatusAsync()
+    {
+        try
+        {
+            var resp = await Http.GetAsync("http://localhost:5174/api/framer/status");
+            if (resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(body);
+                _framerConfigured = doc.RootElement
+                    .TryGetProperty("configured", out var cv) && cv.GetBoolean();
+            }
+        }
+        catch { /* server may not be running — non-fatal */ }
+        StateHasChanged();
+    }
+
+    private async Task SendToFramer()
+    {
+        if (_result?.ZipBytes == null) return;
+
+        _framerSending = true;
+        _framerError   = string.Empty;
+        _framerSuccess = string.Empty;
+        StateHasChanged();
+
+        try
+        {
+            // Extract the React component code from the in-memory ZIP
+            var (reactCode, cssCode) = ExtractCodeFromZip(_result.ZipBytes, _result.ComponentName);
+
+            if (string.IsNullOrEmpty(reactCode))
+            {
+                _framerError = "Could not extract React code from the generated ZIP.";
+                return;
+            }
+
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                componentName = _result.ComponentName,
+                reactCode,
+                cssCode,
+            });
+
+            var resp = await Http.PostAsync(
+                "http://localhost:5174/api/framer/send",
+                new System.Net.Http.StringContent(payload,
+                    System.Text.Encoding.UTF8, "application/json"));
+
+            var body = await resp.Content.ReadAsStringAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root    = doc.RootElement;
+            var success = root.TryGetProperty("success", out var sv) && sv.GetBoolean();
+
+            if (success)
+            {
+                _framerSuccess = $"✅ '{_result.ComponentName}' is now in your Framer project — open Framer and find it under Assets → Code.";
+            }
+            else
+            {
+                _framerError = root.TryGetProperty("error", out var er)
+                    ? er.GetString() ?? "Failed to send to Framer."
+                    : "Failed to send to Framer. Check the server log for details.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _framerError = $"Send failed: {ex.Message}";
+        }
+        finally
+        {
+            _framerSending = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Extracts the React component code and CSS from the in-memory ZIP bytes
+    /// produced by ConstructorService.BuildZipInMemory.
+    /// Files are at: src/components/{Name}.jsx|tsx  and  src/styles/{Name}.css
+    /// </summary>
+    private static (string reactCode, string cssCode) ExtractCodeFromZip(
+        byte[] zipBytes, string componentName)
+    {
+        try
+        {
+            using var ms  = new System.IO.MemoryStream(zipBytes);
+            using var zip = new System.IO.Compression.ZipArchive(ms,
+                System.IO.Compression.ZipArchiveMode.Read);
+
+            string reactCode = string.Empty;
+            string cssCode   = string.Empty;
+
+            foreach (var entry in zip.Entries)
+            {
+                var name = entry.FullName.Replace('\\', '/');
+
+                // Match src/components/{ComponentName}.jsx|tsx|js|ts|vue|svelte
+                if (name.Contains($"components/{componentName}.", StringComparison.OrdinalIgnoreCase))
+                {
+                    using var sr = new System.IO.StreamReader(entry.Open());
+                    reactCode = sr.ReadToEnd();
+                }
+                // Match src/styles/{ComponentName}.css
+                else if (name.Contains($"styles/{componentName}.css", StringComparison.OrdinalIgnoreCase))
+                {
+                    using var sr = new System.IO.StreamReader(entry.Open());
+                    cssCode = sr.ReadToEnd();
+                }
+            }
+
+            return (reactCode, cssCode);
+        }
+        catch
+        {
+            return (string.Empty, string.Empty);
+        }
+    }
+
+    // ── Canva integration ─────────────────────────────────────────────────────
+
+    private async Task CheckCanvaStatusAsync()
+    {
+        try
+        {
+            var userId = await Licence.GetUserUuidAsync();
+            var resp   = await Http.GetAsync(
+                $"http://localhost:5174/api/canva/status?userId={userId}");
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                _canvaConnected = doc.RootElement
+                    .TryGetProperty("connected", out var cv) && cv.GetBoolean();
+            }
+        }
+        catch { /* server may not be running — non-fatal */ }
+        StateHasChanged();
+    }
+
+    private async Task ConnectCanva()
+    {
+        var userId = await Licence.GetUserUuidAsync();
+        // Navigate to the server auth endpoint which redirects to Canva
+        await JS.InvokeVoidAsync("eval",
+            $"window.location.href = 'http://localhost:5174/api/canva/auth?userId={userId}'");
+    }
+
+    private async Task SendToCanva()
+    {
+        _canvaSending = true;
+        _canvaError   = string.Empty;
+        _canvaEditUrl = string.Empty;
+        StateHasChanged();
+
+        try
+        {
+            var userId  = await Licence.GetUserUuidAsync();
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                componentId = ActiveComponentId,
+                userId,
+            });
+            var resp = await Http.PostAsync(
+                "http://localhost:5174/api/canva/send",
+                new System.Net.Http.StringContent(payload,
+                    System.Text.Encoding.UTF8, "application/json"));
+
+            var body = await resp.Content.ReadAsStringAsync();
+
+            // Parse response with JsonDocument — avoids all quote-escaping issues
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root    = doc.RootElement;
+            var success = root.TryGetProperty("success", out var sv) && sv.GetBoolean();
+
+            if (success)
+            {
+                _canvaEditUrl = root.TryGetProperty("editUrl", out var eu)
+                    ? eu.GetString() ?? "https://www.canva.com/"
+                    : "https://www.canva.com/";
+            }
+            else
+            {
+                _canvaError = root.TryGetProperty("error", out var er)
+                    ? er.GetString() ?? "Failed to send to Canva."
+                    : "Failed to send to Canva. Check the server log for details.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _canvaError = $"Send failed: {ex.Message}";
+        }
+        finally
+        {
+            _canvaSending = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task DisconnectCanva()
+    {
+        _canvaConnected = false;
+        _canvaEditUrl   = string.Empty;
+        _canvaError     = string.Empty;
+        // Token file deletion is handled server-side in a future version.
+        // For now, the user simply loses the connected state in this session.
+        await Task.CompletedTask;
+        StateHasChanged();
+    }
+
+    // ── Snapshot handler — fires when content.js posts a DOM snapshot ─────────
+    private void OnSnapshotReceived(TransformRequest request)
+    {
+        _lastSnapshot = request;
+        _error        = string.Empty;
+        _result       = null;
+
+        // Persist raw snapshot to IndexedDB so it survives navigation
+        try
+        {
+            var userUuid = Licence.GetUserUuidAsync().GetAwaiter().GetResult();
+            Storage.WriteSnapshot(userUuid, request);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Index] Snapshot persist failed: {ex.Message}");
+        }
+
+        InvokeAsync(StateHasChanged);
+
+        // Immediately deconstruct — writes SVG, _css.json, _js.json,
+        // influence.json, objective.json and .html to IndexedDB so all
+        // pillar files are ready before the user clicks Generate Code.
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                var result = await Pipeline.TransformAsync(request);
+                if (!result.Success)
+                    Console.WriteLine($"[Index] Auto-deconstruct failed: {result.Error}");
+                else
+                    Console.WriteLine($"[Index] Auto-deconstruct complete — {result.ComponentId} ({result.ObjectCount} elements)");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Index] Auto-deconstruct exception: {ex.Message}");
+            }
+        });
+    }
+
+    // ── Generate ──────────────────────────────────────────────────────────────
+    private async Task Generate()
+    {
+        _error   = string.Empty;
+        _result  = null;
+        _isWorking = true;
+
+        System.Action<PipelineProgress> onProgress = p =>
+        {
+            _progress    = p.Percentage;
+            _progressMsg = p.Message;
+            InvokeAsync(StateHasChanged);
+        };
+        var generateProgress = new System.Progress<PipelineProgress>(onProgress);
+
+        try
+        {
+            _result = await Pipeline.GenerateAsync(
+                ActiveComponentId,
+                _framework,
+                _styleOutput,
+                _language,
+                _unifiedMode == "true",
+                generateProgress);
+
+            if (!_result.Success)
+                _error = _result.Error ?? "Generation failed.";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message == "INSUFFICIENT_CREDITS"
+                ? "Insufficient OpenRouter credits. Top up your balance at openrouter.ai/credits to continue generating code."
+                : ex.Message;
+        }
+        finally
+        {
+            _isWorking = false;
+        }
+    }
+
+    // ── Download ──────────────────────────────────────────────────────────────
+    private async Task DownloadZip()
+    {
+        if (_result?.ZipBytes == null) return;
+        var fileName = $"{_result.ComponentName}.zip";
+        await JS.InvokeVoidAsync("__snapstak_download", _result.ZipBytes, fileName);
+    }
+
+    // ── Clear ─────────────────────────────────────────────────────────────────
+    private void ClearSession()
+    {
+        _lastSnapshot = null;
+        _result       = null;
+        _error        = string.Empty;
+
+        try
+        {
+            var userUuid = Licence.GetUserUuidAsync().GetAwaiter().GetResult();
+            Storage.ClearSnapshot(userUuid);
+        }
+        catch { /* non-fatal */ }
+    }
+
+    public void Dispose()
+    {
+        Bridge.OnSnapshot -= OnSnapshotReceived;
+    }
+}
+
+<style>
+    .page-transform { display: flex; flex-direction: column; gap: 20px; }
+    .page-header   { margin-bottom: 8px; }
+    .page-title    { font-size: 28px; font-weight: 700; color: #fff; }
+    .page-sub      { font-size: 14px; color: #888; margin-top: 6px; }
+
+    .connection-bar {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 16px; border-radius: 8px;
+        background: #111; border: 1px solid #222;
+        font-size: 13px; color: #666;
+    }
+    .connection-bar--live { border-color: #1a3a1a; background: #0a110a; color: #4f8; }
+    .connection-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #333; flex-shrink: 0;
+    }
+    .connection-dot--live { background: #4f8; box-shadow: 0 0 6px #4f8; }
+
+    .notice           { padding: 12px 16px; border-radius: 8px; font-size: 13px; }
+    .notice--warn     { background: #1a150a; border: 1px solid #443300; color: #cc8; }
+    .notice--error    { background: #1a0a0a; border: 1px solid #440000; color: #f88; margin-top: 12px; }
+
+    .card          { background: #141414; border: 1px solid #222; border-radius: 12px; padding: 24px; }
+    .card__title   { font-size: 14px; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+    .card__desc    { font-size: 13px; color: #666; margin-bottom: 16px; }
+
+    .snapshot-info          { display: flex; flex-direction: column; gap: 8px; }
+    .snapshot-info__row     { display: flex; gap: 12px; align-items: baseline; }
+    .snapshot-info__label   { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; width: 70px; flex-shrink: 0; }
+    .snapshot-info__value   { font-size: 13px; color: #ccc; }
+    .snapshot-info__value.mono { font-family: monospace; font-size: 12px; color: #4af; }
+
+    .field-row  { display: flex; gap: 8px; margin-top: 12px; }
+    .field      { flex: 1; background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 14px; color: #e8e8e8; font-size: 14px; outline: none; }
+    .field:focus { border-color: #4af; }
+    .field--sm  { flex: 0 0 auto; width: 140px; }
+
+    .framework-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    .fw-btn         { display: flex; align-items: center; gap: 6px; background: #1a1a1a; border: 1px solid #2a2a2a; color: #999; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; transition: all 0.15s; }
+    .fw-btn:hover   { border-color: #444; color: #fff; }
+    .fw-btn:hover .fw-icon { filter: brightness(0) invert(1); }
+    .fw-btn--active { background: #0a1a2a; border-color: #4af; color: #4af; }
+    .fw-icon        { width: 16px; height: 16px; filter: brightness(0) invert(0.6); transition: filter 0.15s; }
+    .fw-btn--active .fw-icon { filter: brightness(0) saturate(100%) invert(70%) sepia(80%) saturate(500%) hue-rotate(180deg); }
+
+    .option-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .opt-label  { font-size: 13px; color: #666; }
+
+    .action-row { display: flex; gap: 12px; }
+    .btn        { padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s; }
+    .btn--primary   { background: #4af; color: #000; }
+    .btn--primary:hover { background: #6cf; }
+    .btn--primary:disabled { background: #1a2a3a; color: #446; cursor: not-allowed; }
+    .btn--success   { background: #2a7a2a; color: #4f8; border: 1px solid #4f8; }
+    .btn--success:hover { background: #1a6a1a; }
+    .btn--ghost     { background: transparent; color: #666; border: 1px solid #222; }
+    .btn--ghost:hover { border-color: #333; color: #aaa; }
+
+    .progress-bar       { height: 4px; background: #1a1a1a; border-radius: 2px; overflow: hidden; margin-bottom: 10px; }
+    .progress-bar__fill { height: 100%; background: #4af; transition: width 0.3s ease; border-radius: 2px; }
+    .progress-msg       { font-size: 13px; color: #888; }
+
+    .result-panel        { background: #0a1a0a; border: 1px solid #1a3a1a; border-radius: 8px; padding: 16px; margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .result-panel__header{ display: flex; flex-direction: column; gap: 4px; }
+    .result-panel__name  { font-size: 16px; font-weight: 600; color: #4f8; }
+    .result-panel__meta  { font-size: 12px; color: #666; }
+
+    /* Framer integration */
+    .btn--framer        { background: #0044ff; color: #fff; border: none; }
+    .btn--framer:hover  { background: #2255ff; }
+    .btn--framer:disabled { background: #001a66; color: #335; cursor: not-allowed; }
+    .notice--framer     { background: #00081a; border: 1px solid #003399;
+                          border-radius: 8px; padding: 10px 14px; font-size: 13px;
+                          color: #88aaff; margin-top: 10px; }
+    .result-panel__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    /* Canva integration */
+    .btn--canva       { background: #7d2ae8; color: #fff; border: none; }
+    .btn--canva:hover { background: #9747ff; }
+    .btn--canva:disabled { background: #2a1a3a; color: #664; cursor: not-allowed; }
+    .btn--sm          { padding: 8px 14px; font-size: 13px; }
+    .btn--canva-open  { background: #1a0a2a; color: #b47fff; border: 1px solid #7d2ae8;
+                        padding: 8px 16px; border-radius: 8px; font-size: 14px;
+                        font-weight: 500; cursor: pointer; text-decoration: none; display: inline-block; }
+    .btn--canva-open:hover { background: #2a0a4a; color: #d47fff; }
+
+    .canva-result        { display: flex; align-items: center; justify-content: space-between;
+                           gap: 16px; flex-wrap: wrap; background: #0d0a14;
+                           border: 1px solid #3a1a6a; border-radius: 8px; padding: 14px 18px; margin-top: 14px; }
+    .canva-result__label { font-size: 14px; color: #b47fff; font-weight: 500; }
+</style>
